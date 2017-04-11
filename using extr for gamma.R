@@ -1,7 +1,3 @@
-# check the first difference of optimal gamma by deleting second part
-#### MFVB without random effect####
-library(OpenMx)
-library(MASS)
 ##### generate data ####
 set.seed(20)
 ###parameter setting##
@@ -159,8 +155,82 @@ positivepoissonrnd<-function(lambda){
   }
   return(samp)
 }
+lambda <- function(x) 
+{
+  nzi <- (1:length(x))[x!=0]   ## avoid the 0 in the x, if it is 0,return 0.125
+  ans <- rep(0.125,length(x))
+  ans[nzi] <- -tanh(x[nzi]/2)/(4*x[nzi]) ### negative?
+  return(ans)
+}
+phi <- function(x) 
+{
+  nzi <- (1:length(x))[x!=0]
+  ans <- rep(0.125,length(x))
+  ans[nzi] <- (x[nzi]/2) - log(1+exp(x[nzi])) + (0.25*x[nzi]*tanh(x[nzi]/2))
+  return(ans)
+} 
+
+####objective function h for optimization beta step
+h.beta<-function(beta,X,u,gamma,bisu,bisv,V,W,status,Hyper)
+{
+  D=(status==1)+(status==2)
+  first=sum(u*(bisu%*%gamma)*exp(X%*%beta))+sum(u*D*((bisv-bisu)%*%gamma)*exp(X%*%beta))
+  second=sum(u*V*(X%*%beta))+sum(u*D*W*(X%*%beta))
+  third=crossprod(beta)*(1/Hyper$sigma.beta)/2
+  h.beta=first-second+third
+  return(h.beta)
+}
 
 
+## Jacobian of h.beta
+grad.h.beta<-function(beta,X,status,u,bisu,bisv,gamma,V,W,Hyper)
+{
+  D=(status==1)+(status==2)
+  First=crossprod(X,u*(bisu%*%gamma)*exp(X%*%beta))+crossprod(X,u*D*((bisv-bisu)%*%gamma)*exp(X%*%beta))
+  Second=crossprod(X,u*V)+crossprod(X,u*D*W)
+  Third=beta*(1/Hyper$sigma.beta)
+  grad.h.beta=First-Second+Third
+  return(grad.h.beta)
+}
+
+h.extr<-function(extr,X,beta,mu.q.u,bisu,bisv,status,V,W,Hyper)
+{
+  D=(status==1)+(status==2)
+  mu.q.gamma=exp(extr)
+  C=exp(X%*%beta+rowSums(X^2*Hyper$sigma.beta/2))
+  modi=bisu%*%mu.q.gamma+10^-5
+  modi1=D*((bisv-bisu)%*%mu.q.gamma)+10^-5
+  First=sum(mu.q.u*C*(bisu%*%mu.q.gamma))+sum(mu.q.u*C*D*((bisv-bisu)%*%mu.q.gamma))
+  Second=sum(mu.q.u*V*log(modi))+sum(mu.q.u*W*D*log(modi1))
+  Third=(1/Hyper$gamma.shape-1)*sum(log(mu.q.gamma))-1/Hyper$gamma.shape*sum(mu.q.gamma)
+  h.gamma=First-Second-Third
+  return(h.gamma)
+}
+
+grad.h.extr<-function(extr,X,beta,mu.q.u,bisu,bisv,status,V,W,Hyper)
+{
+  D=(status==1)+(status==2)
+  mu.q.gamma=exp(extr)
+  C=exp(X%*%beta+rowSums(X^2*Hyper$sigma.beta/2))
+  modi=bisu%*%mu.q.gamma+10^-5
+  modi1=D*((bisv-bisu)%*%mu.q.gamma)+10^-5
+  First=crossprod(bisu,mu.q.u*C)+crossprod(bisv-bisu,mu.q.u*C*D)
+  Second=crossprod(bisu,modi*mu.q.u*V)+crossprod(diag(as.numeric(D))%*%(bisv-bisu),modi1*mu.q.u*W*D)
+  prior= (1/Hyper$gamma.shape-1)*(mu.q.gamma^-1)-1/Hyper$gamma.shape
+  grad.h.extr=(First-Second-prior)*exp(extr)
+  return(grad.h.extr)
+}
+
+h.u<-function(X,mu.q.alpha,mu.q.beta,bisu,bisv,status,Hyper,mu.q.gamma,V,W,Z)
+{
+  D=(status==1)+(status==2)
+  C=exp(X%*%mu.q.beta+rowSums(X^2*Hyper$sigma.beta/2))
+  c_1=-(bisu%*%mu.q.gamma)*C+V*(bisu%*%mu.q.gamma-1+X%*%mu.q.beta)-log(factorial(V))
+  c_2=-D*(bisv-bisu)%*%mu.q.gamma*C+W*((bisv-bisu)%*%mu.q.gamma-1+X%*%mu.q.beta)-log(factorial(W))
+  mu=2*Z%*%mu.q.alpha+c_1+c_2
+  r=(1+exp(-mu))^-1
+  return(r)
+}
 
 data<-generate(n,intercept,a1,a2,b1,b2,p,v)
 tol<-0.01
@@ -409,285 +479,59 @@ while(KeepGoing){
     cat("** Warning: Ridge Shift for Sigma.q.beta **\n")
   }
   
+  
   ## Estimate extr  and mu.q.gamma
-  # foo1<-optim(par=extr.track[i-1,],fn=h.extr,gr=grad.h.extr,X=X,beta=mu.q.beta.track[i,],mu.q.u=mu.q.u.track[i-1,],
-  # bisu=bisu,bisv=bisv,status=status,V=V,W=W,Hyper=Hyper,hessian=TRUE)   
+   foo1<-optim(par=extr.track[i-1,],fn=h.extr,gr=grad.h.extr,X=X,beta=mu.q.beta.track[i,],mu.q.u=mu.q.u.track[i-1,],
+   bisu=bisu,bisv=bisv,status=status,V=V,W=W,Hyper=Hyper,hessian=TRUE)   
   
-  #  extr.track[i,]=foo1$par
-  #  Htmp.extr=foo1$hessian
-  
-  
-  # mu.q.gamma.track[i,]<-exp(extr.track[i,])
-  # inv=diag(1/exp(extr.track[i,]))
-  # fir_dif=grad.h.extr(extr.track[i,],X=X,beta=mu.q.beta.track[i,],mu.q.u=mu.q.u.track[i-1,],
-  # bisu=bisu,bisv=bisv,status=status,V=V,W=W,Hyper=Hyper)
-  # Htmp.gamma=inv%*%(Htmp.extr-diag(as.vector(fir_dif*exp(extr.track[i,]))))%*%inv  ###???? first difference?
+    extr.track[i,]=foo1$par
+    Htmp.extr=foo1$hessian
   
   
-  ## Estimate mu.q.gamma and Sigma.q.gamma
-  cons=diag(1,Dim$K,Dim$K)
-  bvec=rep(10^-4,Dim$K)  # constrian the value of gamma biger than zero
-  #debug(constrOptim(theta=mu.q.gamma.track[i-1,],f=h.gamma,grad=grad.h.gamma,ui=cons,ci=bvec,X=X,beta=mu.q.beta.track[i,],mu.q.u=mu.q.u.track[i-1,],
-  # bisu=bisu,bisv=bisv,status=status,V=V,W=W,Hyper=Hyper,hessian=TRUE))
-  foo1=constrOptim(theta=mu.q.gamma.track[i-1,],f=h.gamma,grad=grad.h.gamma,ui=cons,ci=bvec,X=X,beta=mu.q.beta.track[i,],mu.q.u=mu.q.u.track[i-1,],
-                   bisu=bisu,bisv=bisv,status=status,Hyper=Hyper,hessian=TRUE)
-  
-  #Estimate mu.q.gamma 
-  mu.q.gamma.track[i,]=foo1$par
-  
-  #Estimat Sigma.q.gamma
-  Htmp.gamma=foo1$hessian
-  
-  #check singularity
-  solve_check2=try(solve(Htmp.gamma),TRUE)
-  if(class(solve_check2)=="matrix")
-  {
-    Sigma.q.gamma=solve(Htmp.gamma)
-    singular_warning.gamma=FALSE
-  }else{
-    #Use Moore-Penrose pseudoinverse
-    Sigma.q.gamma=ginv(Htmp.gamma)
-    singular_warinig.gamma=TRUE
-  }
-  
-  
-  #Check positive 
-  eign_val2=eigen(Sigma.q.gamma)$value
-  min_eigen_val2=min(eign_val2)
-  if(all(min_eigen_val2>0))
-  {
-    Sigma.q.gamma.track[[i]]=Sigma.q.gamma
-    pd_warning2=FALSE
-  }else{
-    ridge_constant2=abs(min_eigen_val2)
-    Sigma.q.gamma.track[[i]]=Sigma.q.gamma+diag(ridge_constant2,nrow = nrow(Sigma.q.gamma))
-    pd_warning2=TRUE
-  }#?? the dimension of Sigma.q.gamma
-  
-  if(singular_warning.gamma){
-    cat("** Warning: Using ginv for Sigma.q.beta**\n")
-  }
-  
-  if(pd_warning2){
-    cat("** Warning: Ridge Shift for Sigma.q.beta **\n")
-  }
-  
-  #Updata mu.q.u 
-  
-  mu.q.u.track[i,]<-h.u(X=X,mu.q.alpha=mu.q.alpha.track[i,],mu.q.beta=mu.q.beta.track[i,],bisu=bisu,bisv=bisv,status=status,Hyper=Hyper,mu.q.gamma=mu.q.gamma.track[i,],
-                        V=V,W=W,Z=Z)
-  
-  #Check convergence
-  if (abs(mu.q.alpha.track[i,1]-mu.q.alpha.track[i-1,1])<tol)
-  {
-    cov=i
-    KeepGoing=F
-    cat(paste("Convergence reached in ",conv," steps \n"))
-    cat(paste("Tolerance: ",tol, "\n"))
-    run.time = proc.time()-StartTime
-    cat(paste("Run Time: ", round(run.time[3],digits=2)," s \n"))
-    Result<-list(mu.q.alpha.track[cov,],mu.q.beta.track[cov,])
-    #get the density graph of alpha and beta
-    
-    par(mfrow=c(2,3))
-    plot(density(mu.q.alpha.track[,1]),xlab="alpha 1")
-    plot(density(mu.q.alpha.track[,2]),xlab="alpha 1")
-    plot(density(mu.q.alpha.track[,3]),xlab="alpha 1")
-    plot(density(mu.q.beta.track[,1]),xlab="beta 1")
-    plot(density(mu.q.beta.track[,2]),xlab="alpha 1")
-    
-    return(Result)
-    
-  }
-  if(i==MaxIter){
-    cov=MaxIter
-    cat(paste("Convergence reached in ",conv," steps \n"))
-    cat(paste("Tolerance: ",tol, "\n"))
-    run.time = proc.time()-StartTime
-    cat(paste("Run Time: ", round(run.time[3],digits=2)," s \n"))
-    Result<-list(mu.q.alpha.track[cov,],mu.q.beta.track[cov,])
-    #get the density graph of alpha and beta
-    
-    par(mfrow=c(2,3))
-    plot(density(mu.q.alpha.track[,1]),xlab="alpha 1")
-    plot(density(mu.q.alpha.track[,2]),xlab="alpha 1")
-    plot(density(mu.q.alpha.track[,3]),xlab="alpha 1")
-    plot(density(mu.q.beta.track[,1]),xlab="beta 1")
-    plot(density(mu.q.beta.track[,2]),xlab="alpha 1") 
-  }
-  
-} 
+   mu.q.gamma.track[i,]<-exp(extr.track[i,])
+   inv=diag(1/exp(extr.track[i,]))
+   fir_dif=grad.h.extr(extr.track[i,],X=X,beta=mu.q.beta.track[i,],mu.q.u=mu.q.u.track[i-1,],
+   bisu=bisu,bisv=bisv,status=status,V=V,W=W,Hyper=Hyper)
+   Htmp.gamma=inv%*%(Htmp.extr-diag(as.vector(fir_dif*exp(extr.track[i,]))))%*%inv  ###???? first difference?
 
-#--------- Helper functions for MFVB. without random effect ---------#
-#These functions are used to simplify the programming of the Laplace variational approximation method and lower bound function
-
-lambda <- function(x) 
-{
-  nzi <- (1:length(x))[x!=0]   ## avoid the 0 in the x, if it is 0,return 0.125
-  ans <- rep(0.125,length(x))
-  ans[nzi] <- -tanh(x[nzi]/2)/(4*x[nzi]) ### negative?
-  return(ans)
-}
-phi <- function(x) 
-{
-  nzi <- (1:length(x))[x!=0]
-  ans <- rep(0.125,length(x))
-  ans[nzi] <- (x[nzi]/2) - log(1+exp(x[nzi])) + (0.25*x[nzi]*tanh(x[nzi]/2))
-  return(ans)
-} 
-
-####objective function h for optimization beta step
-h.beta<-function(beta,X,u,gamma,bisu,bisv,V,W,status,Hyper)
-{
-  D=(status==1)+(status==2)
-  first=sum(u*(bisu%*%gamma)*exp(X%*%beta))+sum(u*D*((bisv-bisu)%*%gamma)*exp(X%*%beta))
-  second=sum(u*V*(X%*%beta))+sum(u*D*W*(X%*%beta))
-  third=crossprod(beta)*(1/Hyper$sigma.beta)/2
-  h.beta=first-second+third
-  return(h.beta)
-}
+   
+   #check singularity
+   solve_check2=try(solve(Htmp.gamma),TRUE)
+   if(class(solve_check2)=="matrix")
+   {
+     Sigma.q.gamma=solve(Htmp.gamma)
+     singular_warning.gamma=FALSE
+   }else{
+     #Use Moore-Penrose pseudoinverse
+     Sigma.q.gamma=ginv(Htmp.gamma)
+     singular_warinig.gamma=TRUE
+   }
+   
+   
+   #Check positive 
+   eign_val2=eigen(Sigma.q.gamma)$value
+   min_eigen_val2=min(eign_val2)
+   if(all(min_eigen_val2>0))
+   {
+     Sigma.q.gamma.track[[i]]=Sigma.q.gamma
+     pd_warning2=FALSE
+   }else{
+     ridge_constant2=abs(min_eigen_val2)
+     Sigma.q.gamma.track[[i]]=Sigma.q.gamma+diag(ridge_constant2,nrow = nrow(Sigma.q.gamma))
+     pd_warning2=TRUE
+   }#?? the dimension of Sigma.q.gamma
+   
+   if(singular_warning.gamma){
+     cat("** Warning: Using ginv for Sigma.q.beta**\n")
+   }
+   
+   if(pd_warning2){
+     cat("** Warning: Ridge Shift for Sigma.q.beta **\n")
+   }
+   
+   #Updata mu.q.u 
+   
+   mu.q.u.track[i,]<-h.u(X=X,mu.q.alpha=mu.q.alpha.track[i,],mu.q.beta=mu.q.beta.track[i,],bisu=bisu,bisv=bisv,status=status,Hyper=Hyper,mu.q.gamma=mu.q.gamma.track[i,],
+                         V=V,W=W,Z=Z)
 
 
-## Jacobian of h.beta
-grad.h.beta<-function(beta,X,status,u,bisu,bisv,gamma,V,W,Hyper)
-{
-  D=(status==1)+(status==2)
-  First=crossprod(X,u*(bisu%*%gamma)*exp(X%*%beta))+crossprod(X,u*D*((bisv-bisu)%*%gamma)*exp(X%*%beta))
-  Second=crossprod(X,u*V)+crossprod(X,u*D*W)
-  Third=beta*(1/Hyper$sigma.beta)
-  grad.h.beta=First-Second+Third
-  return(grad.h.beta)
-}
-
-
-
-#objective function h.extr for optimization extr step
-h.extr<-function(extr,X,beta,mu.q.u,bisu,bisv,status,V,W,Hyper)
-{
-  D=(status==1)+(status==2)
-  mu.q.gamma=exp(extr)
-  First=sum(mu.q.u*exp(X%*%beta)*(bisu%*%mu.q.gamma))+sum(mu.q.u*exp(X%*%beta)*D*((bisv-bisu)%*%mu.q.gamma))
-  #avoid inf 
-  rep=log(bisu%*%mu.q.gamma)
-  diag=replace(rep,is.infinite(rep),10^-3)
-  temp=ifelse(((bisv-bisu)%*%mu.q.gamma)<0,1,(bisv-bisu)%*%mu.q.gamma)
-  diag1=replace(log(temp),is.infinite(log(temp)),10^-3)
-  Second=sum(mu.q.u*V*diag)+sum(mu.q.u*W*D*diag1)
-  Third=(1/Hyper$gamma.shape-1)*sum(log(mu.q.gamma))+1/Hyper$gamma.shape*sum(mu.q.gamma)
-  h.extr=First-Second-Third
-  return(h.extr)
-}
-
-grad.h.extr<-function(extr,X,beta,mu.q.u,bisu,bisv,status,V,W,Hyper)
-{
-  mu.q.gamma=exp(extr)
-  C=exp(X%*%beta)
-  D=(status==1)+(status==2)
-  first=crossprod(bisu,mu.q.u*C)+crossprod(bisv-bisu,mu.q.u*C*D)
-  # aviod the inf 
-  rep=1/(bisu%*%mu.q.gamma)
-  diag=replace(rep,is.infinite(rep),10^2)
-  second=crossprod(bisu,diag*mu.q.u*V)
-  
-  
-  rep1=1/((bisv-bisu)%*%mu.q.gamma)
-  diag1=replace(rep1,is.infinite(rep1),10^2)
-  third=crossprod(bisv-bisu,diag1*mu.q.u*W*D)
-  prior= (1/Hyper$gamma.shape-1)*(mu.q.gamma^-1)+1/Hyper$gamma.shape
-  
-  grad.h.extr<-(first-second-third-prior)*exp(extr)
-  return(grad.h.extr)
-}
-#objective function h.gamma for optimization gamma step
-
-h.gamma<-function(mu.q.gamma,X,beta,mu.q.u,bisu,bisv,status,Hyper)
-{
-  D=(status==1)+(status==2)
-  C=exp(X%*%beta+rowSums(X^2*Hyper$sigma.beta/2))
-  First=sum(mu.q.u*C*(bisu%*%mu.q.gamma))+sum(mu.q.u*C*D*((bisv-bisu)%*%mu.q.gamma))
-  modi=bisu%*%mu.q.gamma+10^-5
-  modi1=D*((bisv-bisu)%*%mu.q.gamma)+10^-5
-  Second=sum(mu.q.u*V*log(modi))+sum(mu.q.u*W*D*log(modi1))
-  #avoid inf 
-  #rep=log(bisu%*%mu.q.gamma)
-  #diag=replace(rep,is.infinite(rep),10^-3)
-  #temp=ifelse(((bisv-bisu)%*%mu.q.gamma)<0,1,(bisv-bisu)%*%mu.q.gamma)
-  #diag1=replace(log(temp),is.infinite(log(temp)),10^-3)
- # Second=sum(mu.q.u*V*diag)+sum(mu.q.u*W*D*diag1)
-  Third=(1/Hyper$gamma.shape-1)*sum(log(mu.q.gamma))-1/Hyper$gamma.shape*sum(mu.q.gamma)
-  h.gamma=First-Second-Third
-  return(h.gamma)
-}
-
-
-#Jacobin of h.gamma
-
-grad.h.gamma<-function(mu.q.gamma,X,beta,mu.q.u,bisu,bisv,status,Hyper)
-{
-  C=exp(X%*%beta+rowSums(X^2*Hyper$sigma.beta/2))
-  D=(status==1)+(status==2)
-  First=crossprod(bisu,mu.q.u*C)+crossprod(bisv-bisu,mu.q.u*C*D)
-  modi=bisu%*%mu.q.gamma=10^-5
-  modi1=D*((bisv-bisu)%*%mu.q.gamma)+10^-5   ## avoid the negative value
-  Second=crossprod(bisu,modi*mu.q.u*V)+crossprod(D*(bisv-bisu),modi1*mu.q.u*W*D)
-  
-  # aviod the inf 
-  #rep=1/(bisu%*%mu.q.gamma)
-  #diag=replace(rep,is.infinite(rep),10^2)
- # second=crossprod(bisu,diag*mu.q.u*V)
-  
-  
-  #rep1=1/((bisv-bisu)%*%mu.q.gamma)
-  #diag1=replace(rep1,is.infinite(rep1),10^2)
-  #third=crossprod(bisv-bisu,diag1*mu.q.u*W*D)
-  prior= (1/Hyper$gamma.shape-1)*(mu.q.gamma^-1)-1/Hyper$gamma.shape
-  
-  h.gamma<-First-Second-prior
-  return(h.gamma)
-}
-
-
-h.u<-function(X,mu.q.alpha,mu.q.beta,bisu,bisv,status,Hyper,mu.q.gamma,V,W,Z)
-{
-  D=(status==1)+(status==2)
-  #c=exp(X%*%mu.q.beta)+exp(diag(tcrossprod(X)*Hyper$sigma.beta))  #???1/ Hyper$sigma.beta
-  c=exp(X%*%mu.q.beta)
-  c_1=-(bisu%*%mu.q.gamma)*c+V*(bisu%*%mu.q.gamma-1+X%*%mu.q.beta)-log(factorial(V))
-  c_2=-D*(bisv-bisu)%*%mu.q.gamma*c+W*((bisv-bisu)%*%mu.q.gamma-1+X%*%mu.q.beta)-log(factorial(W))
-  mu=2*Z%*%mu.q.alpha+c_1+c_2
-  r=(1+exp(-mu))^-1
-  return(r)
-}
-###objectibe function H.gamma for optimization gamma step
-H.gamma<-function(bisu,bisv,mu.q.gamma,mu.q.u,status,V,W)
-{
-  dia<-vec2diag(1/(bisu%*%mu.q.gamma)^2*mu.q.u*V)
-  first<-crossprod(bisu,dia)%*%bisu
-  D<-(status==1)+(status==2)
-  dia2<-vec2diag(1/((bisv-bisu)%*%mu.q.gamma)^2*mu.q.u*D*W)
-  second<-crossprod(bisv-bisu,dia2)%*%(bisv-bisu)
-  H.gamma<-first+second
-  return(H.gamma)
-}
-
-### Set up function for the lower bound on the marginal log-likelihood:
-
-
-# h.beta<-function(beta,status,mu.q.u,mu.q.gamma,bisu,bisv,V,W,Hyper)
-# {
-#    D=as.numeric((status==1)+(status==2))
-#   first=mu.q.u*t(bisu%*%mu.q.gamma)*exp(X%*%beta)+mu.q.u*D*t((bisv-bisu)%*%mu.q.gamma)*exp(X%*%beta)
-#  second=mu.q.u*V+mu.q.u*D*W
-#    h<--crossprod(X,first)+crossprod(X,second)-beta/Hyper$sigma.beta
-#    return(h)
-#  }
-
-#### objectibe function H for optimization beta step
-H.beta<-function(X,beta,mu.q.u,mu.q.gamma,bisu,bisv,Hyper,Dim)
-{
-  first=mu.q.u*t(bisu%*%mu.q.gamma)*exp(X%*%beta)+mu.q.u*D*t((bisv-bisu)%*%mu.q.gamma)*exp(X%*%beta)
-  middle=diag(as.vector(first))
-  H=crossprod(X,middle)%*%X+diag(rep(1/Hyper$sigma.beta),Dim$P)
-  return(H)
-  
-}
